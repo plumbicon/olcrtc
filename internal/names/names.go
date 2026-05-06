@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"os"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 //go:embed data/names
@@ -94,4 +96,23 @@ func randomIndex(limit int) int {
 	}
 
 	return int(n.Int64())
+}
+
+// GenerateForCarrier generates a room ID in the appropriate format for the given carrier.
+// Different carriers have different requirements:
+// - telemost: human-readable names (e.g., "John Smith")
+// - jazz: human-readable names or "any" (e.g., "Jane Doe")
+// - wbstream: UUID format (e.g., "550e8400-e29b-41d4-a716-446655440000")
+func GenerateForCarrier(carrierName string) string {
+	switch carrierName {
+	case "wbstream":
+		// WBStream requires UUID format (no non-ASCII characters in HTTP path)
+		return uuid.New().String()
+	case "telemost", "jazz":
+		// These carriers can use human-readable names
+		return Generate()
+	default:
+		// Default to UUID for safety with unknown carriers
+		return uuid.New().String()
+	}
 }

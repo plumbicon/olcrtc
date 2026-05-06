@@ -40,13 +40,40 @@ var (
 
 // Client handles local SOCKS5 connections and tunnels them to the server.
 type Client struct {
-	ln        link.Link
-	cipher    *crypto.Cipher
-	conn      *muxconn.Conn
-	session   *smux.Session
-	sessMu    sync.RWMutex
-	clientID  string
-	dnsServer string
+	ln              link.Link
+	cipher          *crypto.Cipher
+	conn            *muxconn.Conn
+	session         *smux.Session
+	sessMu          sync.RWMutex
+	clientID        string
+	dnsServer       string
+	lifetime        int
+	linkName        string
+	transportName   string
+	carrierName     string
+	localAddr       string
+	videoWidth      int
+	videoHeight     int
+	videoFPS        int
+	videoBitrate    string
+	videoHW         string
+	videoQRSize     int
+	videoQRRecovery string
+	videoCodec      string
+	videoTileModule int
+	videoTileRS     int
+	vp8FPS          int
+	vp8BatchSize    int
+	seiFPS          int
+	seiBatchSize    int
+	seiFragmentSize int
+	seiAckTimeoutMS int
+}
+
+// ServiceMessage is a message from the server to the client.
+type ServiceMessage struct {
+	Type   string `json:"type"`
+	RoomID string `json:"room_id"`
 }
 
 // Run starts the client with the specified parameters.
@@ -78,6 +105,7 @@ func Run(
 	seiBatchSize int,
 	seiFragmentSize int,
 	seiAckTimeoutMS int,
+	lifetime int,
 ) error {
 	return RunWithReady(
 		ctx, linkName, transportName, carrierName, roomURL, keyHex, clientID, localAddr,
@@ -86,6 +114,7 @@ func Run(
 		videoQRSize, videoQRRecovery, videoCodec, videoTileModule, videoTileRS,
 		vp8FPS, vp8BatchSize,
 		seiFPS, seiBatchSize, seiFragmentSize, seiAckTimeoutMS,
+		lifetime,
 	)
 }
 
@@ -119,6 +148,7 @@ func RunWithReady(
 	seiBatchSize int,
 	seiFragmentSize int,
 	seiAckTimeoutMS int,
+	lifetime int,
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -128,7 +158,32 @@ func RunWithReady(
 		return fmt.Errorf("setupCipher failed: %w", err)
 	}
 
-	c := &Client{cipher: cipher, clientID: clientID, dnsServer: dnsServer}
+	c := &Client{
+		cipher:          cipher,
+		clientID:        clientID,
+		dnsServer:       dnsServer,
+		lifetime:        lifetime,
+		linkName:        linkName,
+		transportName:   transportName,
+		carrierName:     carrierName,
+		localAddr:       localAddr,
+		videoWidth:      videoWidth,
+		videoHeight:     videoHeight,
+		videoFPS:        videoFPS,
+		videoBitrate:    videoBitrate,
+		videoHW:         videoHW,
+		videoQRSize:     videoQRSize,
+		videoQRRecovery: videoQRRecovery,
+		videoCodec:      videoCodec,
+		videoTileModule: videoTileModule,
+		videoTileRS:     videoTileRS,
+		vp8FPS:          vp8FPS,
+		vp8BatchSize:    vp8BatchSize,
+		seiFPS:          seiFPS,
+		seiBatchSize:    seiBatchSize,
+		seiFragmentSize: seiFragmentSize,
+		seiAckTimeoutMS: seiAckTimeoutMS,
+	}
 
 	if err := c.bringUpLink(
 		runCtx, linkName, transportName, carrierName, roomURL, cancel,
@@ -154,6 +209,9 @@ func RunWithReady(
 	if onReady != nil {
 		onReady()
 	}
+
+	// Start service message listener
+	go c.serviceMessageListener(runCtx)
 
 	go c.acceptLoop(runCtx, listener)
 

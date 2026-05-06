@@ -34,18 +34,40 @@ var (
 
 // Server handles incoming tunnel connections and proxies their traffic.
 type Server struct {
-	ln             link.Link
-	cipher         *crypto.Cipher
-	conn           *muxconn.Conn
-	session        *smux.Session
-	sessMu         sync.RWMutex
-	reinstallMu    sync.Mutex
-	wg             sync.WaitGroup
-	clientID       string
-	dnsServer      string
-	resolver       *net.Resolver
-	socksProxyAddr string
-	socksProxyPort int
+	ln              link.Link
+	cipher          *crypto.Cipher
+	conn            *muxconn.Conn
+	session         *smux.Session
+	sessMu          sync.RWMutex
+	reinstallMu     sync.Mutex
+	rotateMu        sync.Mutex
+	wg              sync.WaitGroup
+	clientID        string
+	dnsServer       string
+	resolver        *net.Resolver
+	socksProxyAddr  string
+	socksProxyPort  int
+	lifetime        int
+	roomURL         string
+	linkName        string
+	transportName   string
+	carrierName     string
+	videoWidth      int
+	videoHeight     int
+	videoFPS        int
+	videoBitrate    string
+	videoHW         string
+	videoQRSize     int
+	videoQRRecovery string
+	videoCodec      string
+	videoTileModule int
+	videoTileRS     int
+	vp8FPS          int
+	vp8BatchSize    int
+	seiFPS          int
+	seiBatchSize    int
+	seiFragmentSize int
+	seiAckTimeoutMS int
 }
 
 // ConnectRequest is a message from the client to establish a new connection.
@@ -54,6 +76,12 @@ type ConnectRequest struct {
 	ClientID string `json:"clientId"`
 	Addr     string `json:"addr"`
 	Port     int    `json:"port"`
+}
+
+// ServiceMessage is a message from the server to the client.
+type ServiceMessage struct {
+	Type   string `json:"type"`
+	RoomID string `json:"room_id"`
 }
 
 // Run starts the server with the specified parameters.
@@ -84,6 +112,7 @@ func Run(
 	seiBatchSize int,
 	seiFragmentSize int,
 	seiAckTimeoutMS int,
+	lifetime int,
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -94,11 +123,32 @@ func Run(
 	}
 
 	s := &Server{
-		cipher:         cipher,
-		clientID:       clientID,
-		dnsServer:      dnsServer,
-		socksProxyAddr: socksProxyAddr,
-		socksProxyPort: socksProxyPort,
+		cipher:          cipher,
+		clientID:        clientID,
+		dnsServer:       dnsServer,
+		socksProxyAddr:  socksProxyAddr,
+		socksProxyPort:  socksProxyPort,
+		lifetime:        lifetime,
+		roomURL:         roomURL,
+		linkName:        linkName,
+		transportName:   transportName,
+		carrierName:     carrierName,
+		videoWidth:      videoWidth,
+		videoHeight:     videoHeight,
+		videoFPS:        videoFPS,
+		videoBitrate:    videoBitrate,
+		videoHW:         videoHW,
+		videoQRSize:     videoQRSize,
+		videoQRRecovery: videoQRRecovery,
+		videoCodec:      videoCodec,
+		videoTileModule: videoTileModule,
+		videoTileRS:     videoTileRS,
+		vp8FPS:          vp8FPS,
+		vp8BatchSize:    vp8BatchSize,
+		seiFPS:          seiFPS,
+		seiBatchSize:    seiBatchSize,
+		seiFragmentSize: seiFragmentSize,
+		seiAckTimeoutMS: seiAckTimeoutMS,
 	}
 	s.setupResolver()
 
@@ -116,6 +166,14 @@ func Run(
 		<-runCtx.Done()
 		s.closeSession()
 	}()
+
+	if s.lifetime > 0 {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.lifetimeManager(runCtx, cancel)
+		}()
+	}
 
 	s.serve(runCtx)
 
@@ -233,6 +291,7 @@ func (s *Server) bringUpLink(
 		defer s.wg.Done()
 		ln.WatchConnection(ctx)
 	}()
+
 	return nil
 }
 

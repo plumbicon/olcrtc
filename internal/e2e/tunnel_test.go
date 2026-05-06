@@ -318,6 +318,7 @@ func startTunnel(t *testing.T, serverClientID, clientClientID string) *tunnelRun
 			0,
 			0,
 			0,
+			0,
 		)
 	}()
 	room.waitConnected(t, 1)
@@ -346,6 +347,7 @@ func startTunnel(t *testing.T, serverClientID, clientClientID string) *tunnelRun
 			0,
 			"",
 			"",
+			0,
 			0,
 			0,
 			0,

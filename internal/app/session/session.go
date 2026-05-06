@@ -119,6 +119,7 @@ type Config struct {
 	SEIBatchSize    int
 	SEIFragmentSize int
 	SEIAckTimeoutMS int
+	Lifetime        int
 }
 
 // RegisterDefaults registers built-in carriers and transports.
@@ -327,6 +328,7 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.SEIBatchSize,
 			cfg.SEIFragmentSize,
 			cfg.SEIAckTimeoutMS,
+			cfg.Lifetime,
 		); err != nil {
 			return fmt.Errorf("server: %w", err)
 		}
@@ -360,6 +362,7 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.SEIBatchSize,
 			cfg.SEIFragmentSize,
 			cfg.SEIAckTimeoutMS,
+			cfg.Lifetime,
 		); err != nil {
 			return fmt.Errorf("client: %w", err)
 		}

@@ -33,6 +33,7 @@ type config struct {
 	carrier         string
 	roomID          string
 	clientID        string
+	provider        string
 	socksPort       int
 	socksHost       string
 	keyHex          string
@@ -57,6 +58,7 @@ type config struct {
 	seiBatchSize    int
 	seiFragmentSize int
 	seiAckTimeoutMS int
+	lifetime        int
 }
 
 func main() {
@@ -135,10 +137,11 @@ func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, er
 
 	fs.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
 	fs.StringVar(&cfg.link, "link", "", "Link: direct (p2p connection type)")
-	fs.StringVar(&cfg.transport, "transport", "", "Transport: datachannel, videochannel, seichannel")
+	fs.StringVar(&cfg.transport, "transport", "", "Transport: datachannel, videochannel, seichannel, vp8channel")
 	fs.StringVar(&cfg.carrier, "carrier", "", "Carrier: telemost, jazz, wbstream")
 	fs.StringVar(&cfg.roomID, "id", "", "Room ID")
 	fs.StringVar(&cfg.clientID, "client-id", "", "Client ID: binds one srv to one cnc (required)")
+	fs.StringVar(&cfg.provider, "provider", "", "Deprecated alias for -carrier")
 	fs.IntVar(&cfg.socksPort, "socks-port", 0, "SOCKS5 port (client only)")
 	fs.StringVar(&cfg.socksHost, "socks-host", "", "SOCKS5 listen host (client only)")
 	fs.StringVar(&cfg.keyHex, "key", "", "Shared encryption key (hex)")
@@ -166,8 +169,15 @@ func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, er
 	fs.IntVar(&cfg.seiBatchSize, "batch", 0, "Transport frames per tick for batched transports (seichannel)")
 	fs.IntVar(&cfg.seiFragmentSize, "frag", 0, "Fragment size in bytes for fragmented transports (seichannel)")
 	fs.IntVar(&cfg.seiAckTimeoutMS, "ack-ms", 0, "ACK timeout in milliseconds for reliable visual transports (seichannel)")
+	fs.IntVar(&cfg.lifetime, "lifetime", 0, "Room lifetime in seconds (server only, 0 = infinite)")
 
-	return cfg, fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return cfg, err
+	}
+	if cfg.carrier == "" {
+		cfg.carrier = cfg.provider
+	}
+	return cfg, nil
 }
 
 func configureLogging(debug bool) {
@@ -233,6 +243,7 @@ func toSessionConfig(cfg config) session.Config {
 		SEIBatchSize:    cfg.seiBatchSize,
 		SEIFragmentSize: cfg.seiFragmentSize,
 		SEIAckTimeoutMS: cfg.seiAckTimeoutMS,
+		Lifetime:        cfg.lifetime,
 	}
 }
 

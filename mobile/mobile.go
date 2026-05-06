@@ -234,6 +234,7 @@ func Check(
 			0,
 			0,
 			0,
+			0,
 		)
 	}()
 
@@ -322,6 +323,7 @@ func startWithConfig(
 			0,
 			cfg.vp8FPS,
 			cfg.vp8BatchSize,
+			0,
 			0,
 			0,
 			0,
