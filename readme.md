@@ -35,6 +35,10 @@ Or wait for the release or at least a release
 
 [Client subscription format](docs/sub.md)
 
+Server JSON config can expose an HTTP subscription endpoint with `-port` or
+top-level `"port"` in config. The endpoint returns `sub.md` plain text with
+current room IDs for client imports.
+
 
 
 ## Build
