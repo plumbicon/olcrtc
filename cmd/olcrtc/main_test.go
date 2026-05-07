@@ -42,13 +42,15 @@ func TestToSessionConfig(t *testing.T) {
 		seiBatchSize:    3,
 		seiFragmentSize: 512,
 		seiAckTimeoutMS: 1500,
+		lifetime:        300,
 	}
 
 	got := toSessionConfig(cfg)
 	if got.Mode != cfg.mode || got.Carrier != "jazz" || got.SOCKSPort != cfg.socksPort ||
 		got.VideoTileRS != cfg.videoTileRS || got.VP8BatchSize != cfg.vp8BatchSize ||
 		got.SEIFPS != cfg.seiFPS || got.SEIBatchSize != cfg.seiBatchSize ||
-		got.SEIFragmentSize != cfg.seiFragmentSize || got.SEIAckTimeoutMS != cfg.seiAckTimeoutMS {
+		got.SEIFragmentSize != cfg.seiFragmentSize || got.SEIAckTimeoutMS != cfg.seiAckTimeoutMS ||
+		got.Lifetime != cfg.lifetime {
 		t.Fatalf("toSessionConfig() = %+v", got)
 	}
 
@@ -86,6 +88,7 @@ func TestParseFlagsFrom(t *testing.T) {
 		"-batch", "4",
 		"-frag", "512",
 		"-ack-ms", "1500",
+		"-lifetime", "300",
 	}, flag.ContinueOnError)
 	if err != nil {
 		t.Fatalf("parseFlagsFrom() error = %v", err)
@@ -93,7 +96,8 @@ func TestParseFlagsFrom(t *testing.T) {
 	if cfg.mode != "srv" || cfg.carrier != "telemost" || cfg.roomID != "room" ||
 		cfg.debug != true || cfg.videoCodec != "tile" || cfg.videoTileRS != 40 ||
 		cfg.vp8FPS != 24 || cfg.vp8BatchSize != 3 || cfg.seiFPS != 40 ||
-		cfg.seiBatchSize != 4 || cfg.seiFragmentSize != 512 || cfg.seiAckTimeoutMS != 1500 {
+		cfg.seiBatchSize != 4 || cfg.seiFragmentSize != 512 || cfg.seiAckTimeoutMS != 1500 ||
+		cfg.lifetime != 300 {
 		t.Fatalf("parseFlagsFrom() = %+v", cfg)
 	}
 
@@ -235,5 +239,121 @@ func TestWaitForShutdown(t *testing.T) {
 	errCh <- want
 	if err := waitForShutdown(errCh); !errors.Is(err, want) {
 		t.Fatalf("waitForShutdown(error) = %v, want %v", err, want)
+	}
+}
+
+func TestLoadJSONConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "olcrtc.json")
+	data := []byte(`{
+		"mode": "cnc",
+		"link": "direct",
+		"endpoint": {
+			"room_id": "room-id",
+			"key": "64_hex_key"
+		},
+		"client_id": "client",
+		"carrier": "wbstream",
+		"transport": {
+			"type": "seichannel",
+			"vp8": {
+				"fps": 60,
+				"batch": 64
+			},
+			"sei": {
+				"fps": 40,
+				"batch": 4,
+				"frag": 512,
+				"ack_ms": 1500
+			}
+		},
+		"dns": "1.1.1.1:53",
+		"data": "data",
+		"client": {
+			"socks_host": "127.0.0.1",
+			"socks_port": 1080
+		},
+		"lifetime": 300
+	}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := loadJSONConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.mode != "cnc" || cfg.link != "direct" || cfg.roomID != "room-id" ||
+		cfg.clientID != "client" || cfg.keyHex != "64_hex_key" || cfg.carrier != "wbstream" ||
+		cfg.transport != "seichannel" || cfg.vp8FPS != 60 || cfg.vp8BatchSize != 64 ||
+		cfg.seiFPS != 40 || cfg.seiBatchSize != 4 || cfg.seiFragmentSize != 512 ||
+		cfg.seiAckTimeoutMS != 1500 || cfg.dnsServer != "1.1.1.1:53" ||
+		cfg.dataDir != "data" || cfg.socksHost != "127.0.0.1" || cfg.socksPort != 1080 ||
+		cfg.lifetime != 300 || cfg.videoQRRecovery != "low" || cfg.videoCodec != "qrcode" {
+		t.Fatalf("loadJSONConfig() = %+v", cfg)
+	}
+}
+
+func TestMergeConfigAppliesOnlyExplicitFlags(t *testing.T) {
+	dst := config{
+		carrier:      "wbstream",
+		transport:    "vp8channel",
+		vp8FPS:       60,
+		vp8BatchSize: 64,
+		seiFPS:       40,
+	}
+	flags := config{
+		carrier:      "telemost",
+		transport:    "",
+		vp8FPS:       30,
+		vp8BatchSize: 0,
+		seiFPS:       20,
+	}
+
+	mergeConfig(&dst, flags, map[string]bool{
+		"carrier": true,
+		"vp8-fps": true,
+		"fps":     true,
+	})
+
+	if dst.carrier != "telemost" || dst.transport != "vp8channel" ||
+		dst.vp8FPS != 30 || dst.vp8BatchSize != 64 || dst.seiFPS != 20 {
+		t.Fatalf("mergeConfig() = %+v", dst)
+	}
+}
+
+func TestParseFlagsFromJSONConfigWithOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "olcrtc.json")
+	data := []byte(`{
+		"mode": "cnc",
+		"link": "direct",
+		"id": "room-id",
+		"client_id": "client",
+		"key": "key",
+		"carrier": "wbstream",
+		"transport": {
+			"type": "vp8channel",
+			"vp8": {"fps": 60, "batch": 64}
+		},
+		"dns": "1.1.1.1:53",
+		"data": "data"
+	}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := parseFlagsFrom([]string{
+		"-config", path,
+		"-carrier", "telemost",
+		"-vp8-fps", "30",
+		"-client-id", "override-client",
+	}, flag.ContinueOnError)
+	if err != nil {
+		t.Fatalf("parseFlagsFrom(config) error = %v", err)
+	}
+
+	if cfg.carrier != "telemost" || cfg.vp8FPS != 30 ||
+		cfg.vp8BatchSize != 64 || cfg.clientID != "override-client" {
+		t.Fatalf("parseFlagsFrom(config) = %+v", cfg)
 	}
 }

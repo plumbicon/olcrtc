@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -128,13 +129,294 @@ func parseFlags() config {
 	return cfg
 }
 
+func defaultConfig() config {
+	return config{
+		videoQRRecovery: "low",
+		videoCodec:      "qrcode",
+	}
+}
+
+type jsonConfig struct {
+	Mode      string        `json:"mode"`
+	Link      string        `json:"link"`
+	Carrier   string        `json:"carrier"`
+	Provider  string        `json:"provider"`
+	Endpoint  jsonEndpoint  `json:"endpoint"`
+	Transport jsonTransport `json:"transport"`
+	DNS       string        `json:"dns"`
+	Data      string        `json:"data"`
+	Debug     bool          `json:"debug"`
+	Client    jsonClient    `json:"client"`
+	Server    jsonServer    `json:"server"`
+	Video     jsonVideo     `json:"video"`
+	SEI       jsonSEI       `json:"sei"`
+	Lifetime  int           `json:"lifetime"`
+
+	RoomID         string `json:"id"`
+	ClientID       string `json:"client_id"`
+	Key            string `json:"key"`
+	SOCKSHost      string `json:"socks_host"`
+	SOCKSPort      int    `json:"socks_port"`
+	SOCKSProxy     string `json:"socks_proxy"`
+	SOCKSProxyPort int    `json:"socks_proxy_port"`
+	SEIFPS         int    `json:"fps"`
+	SEIBatch       int    `json:"batch"`
+	SEIFragment    int    `json:"frag"`
+	SEIAckMS       int    `json:"ack_ms"`
+}
+
+type jsonEndpoint struct {
+	RoomID string `json:"room_id"`
+	Key    string `json:"key"`
+}
+
+type jsonTransport struct {
+	Type  string    `json:"type"`
+	VP8   jsonVP8   `json:"vp8"`
+	Video jsonVideo `json:"video"`
+	SEI   jsonSEI   `json:"sei"`
+}
+
+type jsonVP8 struct {
+	FPS   int `json:"fps"`
+	Batch int `json:"batch"`
+}
+
+type jsonVideo struct {
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	FPS        int    `json:"fps"`
+	Bitrate    string `json:"bitrate"`
+	HW         string `json:"hw"`
+	QRSize     int    `json:"qr_size"`
+	QRRecovery string `json:"qr_recovery"`
+	Codec      string `json:"codec"`
+	TileModule int    `json:"tile_module"`
+	TileRS     int    `json:"tile_rs"`
+}
+
+type jsonSEI struct {
+	FPS      int `json:"fps"`
+	Batch    int `json:"batch"`
+	Fragment int `json:"frag"`
+	AckMS    int `json:"ack_ms"`
+}
+
+type jsonClient struct {
+	SOCKSHost string `json:"socks_host"`
+	SOCKSPort int    `json:"socks_port"`
+}
+
+type jsonServer struct {
+	SOCKSProxy     string `json:"socks_proxy"`
+	SOCKSProxyPort int    `json:"socks_proxy_port"`
+}
+
+func loadJSONConfig(path string) (config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return config{}, fmt.Errorf("open config: %w", err)
+	}
+	defer f.Close()
+
+	var raw jsonConfig
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&raw); err != nil {
+		return config{}, fmt.Errorf("decode config: %w", err)
+	}
+
+	cfg := defaultConfig()
+	applyJSONConfig(&cfg, raw)
+	return cfg, nil
+}
+
+func applyJSONConfig(cfg *config, raw jsonConfig) {
+	setString(&cfg.mode, raw.Mode)
+	setString(&cfg.link, raw.Link)
+	setString(&cfg.carrier, raw.Carrier)
+	setString(&cfg.provider, raw.Provider)
+	setString(&cfg.roomID, firstNonEmpty(raw.Endpoint.RoomID, raw.RoomID))
+	setString(&cfg.clientID, raw.ClientID)
+	setString(&cfg.keyHex, firstNonEmpty(raw.Endpoint.Key, raw.Key))
+	setString(&cfg.transport, raw.Transport.Type)
+	setString(&cfg.dnsServer, raw.DNS)
+	setString(&cfg.dataDir, raw.Data)
+	if raw.Debug {
+		cfg.debug = true
+	}
+	setString(&cfg.socksHost, firstNonEmpty(raw.Client.SOCKSHost, raw.SOCKSHost))
+	setInt(&cfg.socksPort, firstNonZero(raw.Client.SOCKSPort, raw.SOCKSPort))
+	setString(&cfg.socksProxyAddr, firstNonEmpty(raw.Server.SOCKSProxy, raw.SOCKSProxy))
+	setInt(&cfg.socksProxyPort, firstNonZero(raw.Server.SOCKSProxyPort, raw.SOCKSProxyPort))
+
+	video := raw.Video
+	if raw.Transport.Video != (jsonVideo{}) {
+		video = raw.Transport.Video
+	}
+	setInt(&cfg.videoWidth, video.Width)
+	setInt(&cfg.videoHeight, video.Height)
+	setInt(&cfg.videoFPS, video.FPS)
+	setString(&cfg.videoBitrate, video.Bitrate)
+	setString(&cfg.videoHW, video.HW)
+	setInt(&cfg.videoQRSize, video.QRSize)
+	setString(&cfg.videoQRRecovery, video.QRRecovery)
+	setString(&cfg.videoCodec, video.Codec)
+	setInt(&cfg.videoTileModule, video.TileModule)
+	setInt(&cfg.videoTileRS, video.TileRS)
+
+	setInt(&cfg.vp8FPS, raw.Transport.VP8.FPS)
+	setInt(&cfg.vp8BatchSize, raw.Transport.VP8.Batch)
+
+	sei := raw.SEI
+	if raw.Transport.SEI != (jsonSEI{}) {
+		sei = raw.Transport.SEI
+	}
+	setInt(&cfg.seiFPS, firstNonZero(sei.FPS, raw.SEIFPS))
+	setInt(&cfg.seiBatchSize, firstNonZero(sei.Batch, raw.SEIBatch))
+	setInt(&cfg.seiFragmentSize, firstNonZero(sei.Fragment, raw.SEIFragment))
+	setInt(&cfg.seiAckTimeoutMS, firstNonZero(sei.AckMS, raw.SEIAckMS))
+	setInt(&cfg.lifetime, raw.Lifetime)
+}
+
+func mergeConfig(dst *config, flags config, setFlags map[string]bool) {
+	if setFlags["mode"] {
+		dst.mode = flags.mode
+	}
+	if setFlags["link"] {
+		dst.link = flags.link
+	}
+	if setFlags["transport"] {
+		dst.transport = flags.transport
+	}
+	if setFlags["carrier"] {
+		dst.carrier = flags.carrier
+	}
+	if setFlags["id"] {
+		dst.roomID = flags.roomID
+	}
+	if setFlags["client-id"] {
+		dst.clientID = flags.clientID
+	}
+	if setFlags["provider"] {
+		dst.provider = flags.provider
+	}
+	if setFlags["socks-port"] {
+		dst.socksPort = flags.socksPort
+	}
+	if setFlags["socks-host"] {
+		dst.socksHost = flags.socksHost
+	}
+	if setFlags["key"] {
+		dst.keyHex = flags.keyHex
+	}
+	if setFlags["debug"] {
+		dst.debug = flags.debug
+	}
+	if setFlags["data"] {
+		dst.dataDir = flags.dataDir
+	}
+	if setFlags["dns"] {
+		dst.dnsServer = flags.dnsServer
+	}
+	if setFlags["socks-proxy"] {
+		dst.socksProxyAddr = flags.socksProxyAddr
+	}
+	if setFlags["socks-proxy-port"] {
+		dst.socksProxyPort = flags.socksProxyPort
+	}
+	if setFlags["video-w"] {
+		dst.videoWidth = flags.videoWidth
+	}
+	if setFlags["video-h"] {
+		dst.videoHeight = flags.videoHeight
+	}
+	if setFlags["video-fps"] {
+		dst.videoFPS = flags.videoFPS
+	}
+	if setFlags["video-bitrate"] {
+		dst.videoBitrate = flags.videoBitrate
+	}
+	if setFlags["video-hw"] {
+		dst.videoHW = flags.videoHW
+	}
+	if setFlags["video-qr-size"] {
+		dst.videoQRSize = flags.videoQRSize
+	}
+	if setFlags["video-qr-recovery"] {
+		dst.videoQRRecovery = flags.videoQRRecovery
+	}
+	if setFlags["video-codec"] {
+		dst.videoCodec = flags.videoCodec
+	}
+	if setFlags["video-tile-module"] {
+		dst.videoTileModule = flags.videoTileModule
+	}
+	if setFlags["video-tile-rs"] {
+		dst.videoTileRS = flags.videoTileRS
+	}
+	if setFlags["vp8-fps"] {
+		dst.vp8FPS = flags.vp8FPS
+	}
+	if setFlags["vp8-batch"] {
+		dst.vp8BatchSize = flags.vp8BatchSize
+	}
+	if setFlags["fps"] {
+		dst.seiFPS = flags.seiFPS
+	}
+	if setFlags["batch"] {
+		dst.seiBatchSize = flags.seiBatchSize
+	}
+	if setFlags["frag"] {
+		dst.seiFragmentSize = flags.seiFragmentSize
+	}
+	if setFlags["ack-ms"] {
+		dst.seiAckTimeoutMS = flags.seiAckTimeoutMS
+	}
+	if setFlags["lifetime"] {
+		dst.lifetime = flags.lifetime
+	}
+}
+
+func setString(dst *string, value string) {
+	if value != "" {
+		*dst = value
+	}
+}
+
+func setInt(dst *int, value int) {
+	if value != 0 {
+		*dst = value
+	}
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, error) {
-	cfg := config{}
+	cfg := defaultConfig()
+	configFile := ""
 	fs := flag.NewFlagSet("olcrtc", errorHandling)
 	if errorHandling == flag.ContinueOnError {
 		fs.SetOutput(io.Discard)
 	}
 
+	fs.StringVar(&configFile, "config", "", "Path to JSON config file")
 	fs.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
 	fs.StringVar(&cfg.link, "link", "", "Link: direct (p2p connection type)")
 	fs.StringVar(&cfg.transport, "transport", "", "Transport: datachannel, videochannel, seichannel, vp8channel")
@@ -173,6 +455,18 @@ func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, er
 
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
+	}
+	setFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		setFlags[f.Name] = true
+	})
+	if configFile != "" {
+		fileCfg, err := loadJSONConfig(configFile)
+		if err != nil {
+			return config{}, err
+		}
+		mergeConfig(&fileCfg, cfg, setFlags)
+		cfg = fileCfg
 	}
 	if cfg.carrier == "" {
 		cfg.carrier = cfg.provider

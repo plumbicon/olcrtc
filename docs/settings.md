@@ -26,8 +26,12 @@
 
 ## Обязательные флаги
 
+Вместо флагов подключения можно передать JSON через `-config <path>`. Значения,
+указанные отдельными CLI-флагами, перекрывают значения из JSON.
+
 | Флаг | Что вводить |
 |------|-------------|
+| `-config` | Путь к JSON-конфигу |
 | `-mode` | `srv` на сервере, `cnc` на клиенте |
 | `-carrier` | `telemost`, `jazz` или `wbstream` |
 | `-transport` | `datachannel`, `vp8channel`, `seichannel` или `videochannel` |
@@ -116,6 +120,74 @@
 ## datachannel
 
 Дополнительных флагов нет - всё по умолчанию.
+
+---
+
+## JSON-конфиг
+
+Минимальный пример для `vp8channel`:
+
+```json
+{
+  "mode": "cnc",
+  "link": "direct",
+  "endpoint": {
+    "room_id": "room-id",
+    "key": "64_hex_key"
+  },
+  "carrier": "wbstream",
+  "transport": {
+    "type": "vp8channel",
+    "vp8": {
+      "fps": 60,
+      "batch": 64
+    }
+  },
+  "dns": "1.1.1.1:53",
+  "data": "data",
+  "client": {
+    "socks_host": "127.0.0.1",
+    "socks_port": 1080
+  }
+}
+```
+
+Запуск:
+
+```sh
+./olcrtc -config client.json
+```
+
+Для сервера укажи `"mode": "srv"` и при необходимости:
+
+```json
+{
+  "server": {
+    "socks_proxy": "127.0.0.1",
+    "socks_proxy_port": 9050
+  },
+  "lifetime": 3600
+}
+```
+
+Для `videochannel` параметры можно положить в `"video"` или в
+`"transport.video"`:
+
+```json
+{
+  "transport": {
+    "type": "videochannel"
+  },
+  "video": {
+    "codec": "qrcode",
+    "width": 1080,
+    "height": 1080,
+    "fps": 60,
+    "bitrate": "5000k",
+    "hw": "none"
+  }
+}
+```
 
 ---
 
