@@ -51,6 +51,7 @@ type Config struct {
 	SEIBatchSize    int
 	SEIFragmentSize int
 	SEIAckTimeoutMS int
+	OnRoomID        func(string)
 }
 
 // Factory creates a link instance.

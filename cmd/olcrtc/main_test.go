@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/openlibrecommunity/olcrtc/internal/app/session"
@@ -251,7 +254,7 @@ func TestLoadJSONConfig(t *testing.T) {
 			"room_id": "room-id",
 			"key": "64_hex_key"
 		},
-		"client_id": "client",
+		"client-id": "client",
 		"carrier": "wbstream",
 		"transport": {
 			"type": "seichannel",
@@ -272,7 +275,8 @@ func TestLoadJSONConfig(t *testing.T) {
 			"socks_host": "127.0.0.1",
 			"socks_port": 1080
 		},
-		"lifetime": 300
+		"lifetime": 300,
+		"port": 8080
 	}`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -291,6 +295,14 @@ func TestLoadJSONConfig(t *testing.T) {
 		cfg.dataDir != "data" || cfg.socksHost != "127.0.0.1" || cfg.socksPort != 1080 ||
 		cfg.lifetime != 300 || cfg.videoQRRecovery != "low" || cfg.videoCodec != "qrcode" {
 		t.Fatalf("loadJSONConfig() = %+v", cfg)
+	}
+
+	loaded, err := loadJSONConfigFile(path)
+	if err != nil {
+		t.Fatalf("load config file: %v", err)
+	}
+	if loaded.port != 8080 {
+		t.Fatalf("port = %d, want 8080", loaded.port)
 	}
 }
 
@@ -374,6 +386,243 @@ func TestLoadJSONConfigsArray(t *testing.T) {
 	}
 	if cfgs[1].vp8BatchSize != 8 {
 		t.Fatalf("cfgs[1].vp8BatchSize = %d, want 8", cfgs[1].vp8BatchSize)
+	}
+}
+
+func TestLoadJSONConfigsVersion4(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "client.json")
+	data := []byte(`{
+		"version": 4,
+		"active_location_id": "netherlands",
+		"port": 9090,
+		"name": "Main subscription",
+		"update": 1778011200,
+		"refresh": "10m",
+		"color": "#4A90E2",
+		"icon": "flag",
+		"used": "10mb/10gb",
+		"available": "9.99gb",
+		"locations": [
+			{
+				"storage_id": "germany",
+				"name": "Germany",
+				"color": "#111111",
+				"icon": "de",
+				"used": "1mb/10gb",
+				"available": "9gb",
+				"ip": "203.0.113.10",
+				"comment": "primary node",
+				"mimo": "DE / primary / IPv4",
+				"endpoint": {
+					"room_id": "room-1",
+					"key": "key-1"
+				},
+				"carrier": "wbstream",
+				"transport": {
+					"type": "datachannel"
+				}
+			},
+			{
+				"storage_id": "netherlands",
+				"name": "Netherlands",
+				"endpoint": {
+					"room_id": "room-2",
+					"key": "key-2"
+				},
+				"carrier": "telemost",
+				"transport": {
+					"type": "vp8channel"
+				}
+			}
+		]
+	}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	loaded, err := loadJSONConfigFile(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if loaded.activeLocationID != "netherlands" {
+		t.Fatalf("activeLocationID = %q, want netherlands", loaded.activeLocationID)
+	}
+	if loaded.port != 9090 {
+		t.Fatalf("port = %d, want 9090", loaded.port)
+	}
+	if loaded.subscription.Name != "Main subscription" || loaded.subscription.Update != 1778011200 ||
+		loaded.subscription.Refresh != "10m" || loaded.subscription.Color != "#4A90E2" ||
+		loaded.subscription.Icon != "flag" || loaded.subscription.Used != "10mb/10gb" ||
+		loaded.subscription.Available != "9.99gb" {
+		t.Fatalf("subscription = %+v", loaded.subscription)
+	}
+	if len(loaded.locations) != 2 {
+		t.Fatalf("len(locations) = %d, want 2", len(loaded.locations))
+	}
+	if loaded.locations[1].storageID != "netherlands" {
+		t.Fatalf("storageID = %q, want netherlands", loaded.locations[1].storageID)
+	}
+	if loaded.locations[1].label != "Netherlands" {
+		t.Fatalf("label = %q, want Netherlands", loaded.locations[1].label)
+	}
+	if loaded.locations[1].roomID != "room-2" {
+		t.Fatalf("roomID = %q, want room-2", loaded.locations[1].roomID)
+	}
+	if loaded.locations[0].color != "#111111" || loaded.locations[0].icon != "de" ||
+		loaded.locations[0].used != "1mb/10gb" || loaded.locations[0].available != "9gb" ||
+		loaded.locations[0].ip != "203.0.113.10" || loaded.locations[0].comment != "primary node" ||
+		loaded.locations[0].mimo != "DE / primary / IPv4" {
+		t.Fatalf("location metadata = %+v", loaded.locations[0])
+	}
+}
+
+func TestClientConfigHandlerServesCurrentSubscription(t *testing.T) {
+	oldUnixNow := unixNow
+	unixNow = func() int64 { return 1778011200 }
+	t.Cleanup(func() { unixNow = oldUnixNow })
+
+	dataCfg := defaultConfig()
+	dataCfg.storageID = "amsterdam-wb-dc"
+	dataCfg.label = "Netherlands"
+	dataCfg.roomID = "old-room"
+	dataCfg.clientID = "user"
+	dataCfg.keyHex = "key"
+	dataCfg.carrier = "wbstream"
+	dataCfg.transport = "datachannel"
+	dataCfg.color = "#4A90E2"
+	dataCfg.icon = "nl"
+	dataCfg.used = "500mb/10gb"
+	dataCfg.available = "9.5gb"
+	dataCfg.ip = "203.0.113.10"
+	dataCfg.comment = "basic free node"
+	dataCfg.mimo = "NL / olcng free sub / IPv6"
+	dataCfg.lifetime = 600
+
+	store := newServedConfigStore([]config{dataCfg}, subscriptionMetadata{
+		Name:      "Zarazaex Free RU",
+		Refresh:   "10m",
+		Color:     "#4A90E2",
+		Icon:      "sub",
+		Used:      "10mb/10gb",
+		Available: "9.99gb",
+	})
+	store.setRoomID(0)("new-room")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	clientConfigHandler(store).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("content type = %q, want text/plain; charset=utf-8", got)
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, `"port"`) || strings.Contains(body, `"version"`) {
+		t.Fatalf("response is not subscription text: %s", body)
+	}
+	wantParts := []string{
+		"#name: Zarazaex Free RU",
+		"#update: 1778011200",
+		"#refresh: 1778011800",
+		"#color: #4A90E2",
+		"#icon: sub",
+		"#used: 10mb/10gb",
+		"#available: 9.99gb",
+		"olcrtc://wbstream?datachannel@new-room#key%user$NL / olcng free sub / IPv6",
+		"##name: Netherlands",
+		"##color: #4A90E2",
+		"##icon: nl",
+		"##used: 500mb/10gb",
+		"##available: 9.5gb",
+		"##ip: 203.0.113.10",
+		"##comment: basic free node",
+	}
+	for _, want := range wantParts {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response missing %q:\n%s", want, body)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/", nil)
+	rec = httptest.NewRecorder()
+	clientConfigHandler(store).ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("post status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestSubscriptionTimestampsWithLocationLifetime(t *testing.T) {
+	oldUnixNow := unixNow
+	unixNow = func() int64 { return 1778012000 }
+	t.Cleanup(func() { unixNow = oldUnixNow })
+
+	store := newServedConfigStore([]config{
+		{
+			label:     "Netherlands",
+			roomID:    "room-1",
+			clientID:  "user",
+			keyHex:    "key",
+			carrier:   "wbstream",
+			transport: "datachannel",
+			lifetime:  600,
+		},
+		{
+			label:     "Netherlands",
+			roomID:    "room-2",
+			clientID:  "user",
+			keyHex:    "key",
+			carrier:   "wbstream",
+			transport: "vp8channel",
+		},
+	}, subscriptionMetadata{Name: "ScumVPN"})
+
+	body := store.subscriptionText()
+	for _, want := range []string{
+		"#name: ScumVPN",
+		"#update: 1778012000",
+		"#refresh: 1778012600",
+		"olcrtc://wbstream?datachannel@room-1#key%user$",
+		"olcrtc://wbstream?vp8channel@room-2#key%user$",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("subscription missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSelectActiveLocationOnlyForClient(t *testing.T) {
+	t.Parallel()
+
+	cfgs := []config{
+		{storageID: "germany", mode: "cnc", roomID: "room-1"},
+		{storageID: "netherlands", mode: "cnc", roomID: "room-2"},
+	}
+
+	selected, err := selectActiveLocation(cfgs, "netherlands")
+	if err != nil {
+		t.Fatalf("select active location: %v", err)
+	}
+	if len(selected) != 1 {
+		t.Fatalf("len(selected) = %d, want 1", len(selected))
+	}
+	if selected[0].roomID != "room-2" {
+		t.Fatalf("selected roomID = %q, want room-2", selected[0].roomID)
+	}
+
+	cfgs[0].mode = "srv"
+	cfgs[1].mode = "srv"
+	selected, err = selectActiveLocation(cfgs, "netherlands")
+	if err != nil {
+		t.Fatalf("select server locations: %v", err)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("len(server selected) = %d, want 2", len(selected))
 	}
 }
 

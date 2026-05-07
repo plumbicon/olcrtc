@@ -27,6 +27,9 @@ const (
 var (
 	// ErrRoomIDRequired indicates that a room id is required for the selected carrier.
 	ErrRoomIDRequired = errors.New("room ID required (use -id <id>)")
+	// ErrAutoRoomUnsupported indicates that the selected carrier cannot create rooms automatically.
+	ErrAutoRoomUnsupported = errors.New(
+		"automatic room creation is not supported for telemost (create a Telemost room and pass its ID with -id)")
 	// ErrModeRequired indicates that mode is not one of the supported values.
 	ErrModeRequired = errors.New("mode required (use -mode srv or -mode cnc)")
 	// ErrCarrierRequired indicates that no carrier was selected.
@@ -121,6 +124,7 @@ type Config struct {
 	SEIFragmentSize int
 	SEIAckTimeoutMS int
 	Lifetime        int
+	OnRoomID        func(string)
 }
 
 // RegisterDefaults registers built-in carriers and transports.
@@ -202,6 +206,9 @@ func validateTransportRegistration(cfg Config) error {
 func validateCommon(cfg Config) error {
 	if cfg.RoomID == "" && cfg.Carrier != "jazz" {
 		return ErrRoomIDRequired
+	}
+	if cfg.Carrier == "telemost" && cfg.RoomID == "any" {
+		return ErrAutoRoomUnsupported
 	}
 	if cfg.ClientID == "" {
 		return ErrClientIDRequired
@@ -331,6 +338,7 @@ func Run(ctx context.Context, cfg Config) error {
 			cfg.SEIFragmentSize,
 			cfg.SEIAckTimeoutMS,
 			cfg.Lifetime,
+			cfg.OnRoomID,
 		); err != nil {
 			return fmt.Errorf("server: %w", err)
 		}

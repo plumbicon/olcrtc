@@ -30,6 +30,7 @@ func registerProvider(name string, factory providerFactory) {
 			DNSServer: cfg.DNSServer,
 			ProxyAddr: cfg.ProxyAddr,
 			ProxyPort: cfg.ProxyPort,
+			OnRoomID:  cfg.OnRoomID,
 		})
 		if err != nil {
 			return nil, err

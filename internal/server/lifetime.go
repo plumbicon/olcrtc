@@ -39,6 +39,7 @@ func (s *Server) rotateRoom(ctx context.Context, cancel context.CancelFunc) {
 		return
 	}
 	logger.Infof("New room ID: %s", newRoomID)
+	s.setRoomID(newRoomID)
 
 	// Send service message to all connected clients
 	s.broadcastServiceMessage(newRoomID)

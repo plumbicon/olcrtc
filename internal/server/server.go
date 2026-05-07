@@ -69,6 +69,7 @@ type Server struct {
 	seiBatchSize    int
 	seiFragmentSize int
 	seiAckTimeoutMS int
+	onRoomID        func(string)
 }
 
 // ConnectRequest is a message from the client to establish a new connection.
@@ -115,6 +116,7 @@ func Run(
 	seiFragmentSize int,
 	seiAckTimeoutMS int,
 	lifetime int,
+	onRoomID func(string),
 ) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -152,6 +154,7 @@ func Run(
 		seiBatchSize:    seiBatchSize,
 		seiFragmentSize: seiFragmentSize,
 		seiAckTimeoutMS: seiAckTimeoutMS,
+		onRoomID:        onRoomID,
 	}
 	s.setupResolver()
 
@@ -270,6 +273,7 @@ func (s *Server) bringUpLink(
 		SEIBatchSize:    seiBatchSize,
 		SEIFragmentSize: seiFragmentSize,
 		SEIAckTimeoutMS: seiAckTimeoutMS,
+		OnRoomID:        s.setRoomID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create link: %w", err)
@@ -297,6 +301,16 @@ func (s *Server) bringUpLink(
 	}()
 
 	return nil
+}
+
+func (s *Server) setRoomID(roomID string) {
+	if roomID == "" {
+		return
+	}
+	s.roomURL = s.buildNewRoomURL(roomID)
+	if s.onRoomID != nil {
+		s.onRoomID(roomID)
+	}
 }
 
 func (s *Server) logLabel() string {

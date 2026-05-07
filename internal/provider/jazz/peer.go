@@ -69,7 +69,7 @@ type Peer struct {
 }
 
 // NewPeer creates a new Jazz provider peer.
-func NewPeer(ctx context.Context, label, roomID, name string, onData func([]byte)) (*Peer, error) {
+func NewPeer(ctx context.Context, label, roomID, name string, onData func([]byte), onRoomID ...func(string)) (*Peer, error) {
 	var roomInfo *RoomInfo
 	var err error
 
@@ -94,6 +94,9 @@ func NewPeer(ctx context.Context, label, roomID, name string, onData func([]byte
 		}
 		log.Printf("Jazz joining room: %s", roomInfo.RoomID)
 	}
+	if len(onRoomID) > 0 && onRoomID[0] != nil {
+		onRoomID[0](jazzRoomID(roomInfo))
+	}
 
 	return &Peer{
 		label:          label,
@@ -107,6 +110,16 @@ func NewPeer(ctx context.Context, label, roomID, name string, onData func([]byte
 		subscriberConn: make(chan struct{}),
 		publisherConn:  make(chan struct{}),
 	}, nil
+}
+
+func jazzRoomID(roomInfo *RoomInfo) string {
+	if roomInfo == nil {
+		return ""
+	}
+	if roomInfo.Password == "" {
+		return roomInfo.RoomID
+	}
+	return roomInfo.RoomID + ":" + roomInfo.Password
 }
 
 func logLabel(label, name string) string {

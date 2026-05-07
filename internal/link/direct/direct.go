@@ -41,6 +41,7 @@ func New(ctx context.Context, cfg link.Config) (link.Link, error) {
 		SEIBatchSize:    cfg.SEIBatchSize,
 		SEIFragmentSize: cfg.SEIFragmentSize,
 		SEIAckTimeoutMS: cfg.SEIAckTimeoutMS,
+		OnRoomID:        cfg.OnRoomID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create transport for direct link: %w", err)

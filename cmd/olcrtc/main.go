@@ -9,9 +9,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,7 +33,13 @@ var ErrDataDirRequired = errors.New("data directory required (use -data data)")
 //nolint:gochecknoglobals // Tests replace the long-running session runner with a bounded function.
 var runSession = session.Run
 
+//nolint:gochecknoglobals // Tests replace the clock to assert generated subscription timestamps.
+var unixNow = func() int64 {
+	return time.Now().Unix()
+}
+
 type config struct {
+	storageID       string
 	label           string
 	mode            string
 	link            string
@@ -62,10 +73,38 @@ type config struct {
 	seiFragmentSize int
 	seiAckTimeoutMS int
 	lifetime        int
+	color           string
+	icon            string
+	used            string
+	available       string
+	ip              string
+	comment         string
+	mimo            string
+	onRoomID        func(string)
 }
 
 type runtimeConfig struct {
-	locations []config
+	locations    []config
+	port         int
+	subscription subscriptionMetadata
+}
+
+type servedConfigStore struct {
+	mu           sync.RWMutex
+	locations    []config
+	subscription subscriptionMetadata
+	updateUnix   int64
+	refreshAfter int
+}
+
+type subscriptionMetadata struct {
+	Name      string
+	Update    int64
+	Refresh   string
+	Color     string
+	Icon      string
+	Used      string
+	Available string
 }
 
 func main() {
@@ -114,9 +153,12 @@ func runWithArgs(args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	errCh := make(chan error, len(runtimeCfg.locations))
+	store := newServedConfigStore(runtimeCfg.locations, runtimeCfg.subscription)
+	errCh := make(chan error, len(runtimeCfg.locations)+1)
+	waitCount := len(runtimeCfg.locations)
 	for i, cfg := range runtimeCfg.locations {
 		i, cfg := i, cfg
+		cfg.onRoomID = store.setRoomID(i)
 		go func() {
 			logger.Infof("Starting location %d/%d [%s]: %s/%s/%s room=%s",
 				i+1, len(runtimeCfg.locations), cfg.label, cfg.link, cfg.transport, cfg.carrier, cfg.roomID)
@@ -127,12 +169,18 @@ func runWithArgs(args []string) error {
 			errCh <- nil
 		}()
 	}
+	if runtimeCfg.port > 0 {
+		waitCount++
+		go func() {
+			errCh <- serveClientConfig(ctx, runtimeCfg.port, store)
+		}()
+	}
 
 	select {
 	case <-sigCh:
 		logger.Info("Shutting down gracefully...")
 		cancel()
-		return waitForShutdown(errCh, len(runtimeCfg.locations))
+		return waitForShutdown(errCh, waitCount)
 	case err := <-errCh:
 		cancel()
 		return err
@@ -169,10 +217,16 @@ func runWithRuntimeConfig(runtimeCfg runtimeConfig) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, len(runtimeCfg.locations))
+	store := newServedConfigStore(runtimeCfg.locations, runtimeCfg.subscription)
+	errCh := make(chan error, len(runtimeCfg.locations)+1)
+	waitCount := len(runtimeCfg.locations)
+	var sessionWG sync.WaitGroup
 	for i, cfg := range runtimeCfg.locations {
 		i, cfg := i, cfg
+		cfg.onRoomID = store.setRoomID(i)
+		sessionWG.Add(1)
 		go func() {
+			defer sessionWG.Done()
 			if err := runSession(ctx, toSessionConfig(cfg)); err != nil {
 				errCh <- fmt.Errorf("location %d: %w", i+1, err)
 				return
@@ -180,8 +234,18 @@ func runWithRuntimeConfig(runtimeCfg runtimeConfig) error {
 			errCh <- nil
 		}()
 	}
+	if runtimeCfg.port > 0 {
+		waitCount++
+		go func() {
+			sessionWG.Wait()
+			cancel()
+		}()
+		go func() {
+			errCh <- serveClientConfig(ctx, runtimeCfg.port, store)
+		}()
+	}
 
-	return waitForShutdown(errCh, len(runtimeCfg.locations))
+	return waitForShutdown(errCh, waitCount)
 }
 
 func parseFlags() config {
@@ -219,6 +283,38 @@ func (c runtimeConfig) dataDir() (string, error) {
 	return dataDir, nil
 }
 
+func selectActiveLocation(cfgs []config, activeLocationID string) ([]config, error) {
+	if activeLocationID == "" || len(cfgs) == 0 {
+		return cfgs, nil
+	}
+
+	isClientConfig := false
+	for _, cfg := range cfgs {
+		if cfg.mode == "cnc" {
+			isClientConfig = true
+			break
+		}
+	}
+	if !isClientConfig {
+		return cfgs, nil
+	}
+
+	selected := make([]config, 0, 1)
+	for _, cfg := range cfgs {
+		if cfg.storageID == activeLocationID {
+			selected = append(selected, cfg)
+		}
+	}
+	switch len(selected) {
+	case 0:
+		return nil, fmt.Errorf("active_location_id %q not found", activeLocationID)
+	case 1:
+		return selected, nil
+	default:
+		return nil, fmt.Errorf("active_location_id %q matches multiple locations", activeLocationID)
+	}
+}
+
 func defaultConfig() config {
 	return config{
 		videoQRRecovery: "low",
@@ -235,6 +331,15 @@ func applyLocationLabels(cfgs []config) {
 }
 
 type jsonConfig struct {
+	StorageID string        `json:"storage_id"`
+	Name      string        `json:"name"`
+	Color     string        `json:"color"`
+	Icon      string        `json:"icon"`
+	Used      string        `json:"used"`
+	Available string        `json:"available"`
+	IP        string        `json:"ip"`
+	Comment   string        `json:"comment"`
+	MIMO      string        `json:"mimo"`
 	Label     string        `json:"label"`
 	Mode      string        `json:"mode"`
 	Link      string        `json:"link"`
@@ -250,9 +355,11 @@ type jsonConfig struct {
 	Video     jsonVideo     `json:"video"`
 	SEI       jsonSEI       `json:"sei"`
 	Lifetime  int           `json:"lifetime"`
+	Port      int           `json:"port"`
 
 	RoomID         string `json:"id"`
 	ClientID       string `json:"client_id"`
+	ClientIDKebab  string `json:"client-id"`
 	Key            string `json:"key"`
 	SOCKSHost      string `json:"socks_host"`
 	SOCKSPort      int    `json:"socks_port"`
@@ -262,6 +369,20 @@ type jsonConfig struct {
 	SEIBatch       int    `json:"batch"`
 	SEIFragment    int    `json:"frag"`
 	SEIAckMS       int    `json:"ack_ms"`
+}
+
+type jsonConfigFile struct {
+	Version          int          `json:"version"`
+	ActiveLocationID string       `json:"active_location_id"`
+	Port             int          `json:"port"`
+	Name             string       `json:"name"`
+	Update           int64        `json:"update"`
+	Refresh          string       `json:"refresh"`
+	Color            string       `json:"color"`
+	Icon             string       `json:"icon"`
+	Used             string       `json:"used"`
+	Available        string       `json:"available"`
+	Locations        []jsonConfig `json:"locations"`
 }
 
 type jsonEndpoint struct {
@@ -311,43 +432,94 @@ type jsonServer struct {
 	SOCKSProxyPort int    `json:"socks_proxy_port"`
 }
 
+type loadedJSONConfigs struct {
+	activeLocationID string
+	locations        []config
+	port             int
+	subscription     subscriptionMetadata
+}
+
 func loadJSONConfigs(path string) ([]config, error) {
+	loaded, err := loadJSONConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return loaded.locations, nil
+}
+
+func loadJSONConfigFile(path string) (loadedJSONConfigs, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open config: %w", err)
+		return loadedJSONConfigs{}, fmt.Errorf("open config: %w", err)
 	}
 	defer f.Close()
 
 	dec := json.NewDecoder(f)
 	var body json.RawMessage
 	if err := dec.Decode(&body); err != nil {
-		return nil, fmt.Errorf("decode config: %w", err)
+		return loadedJSONConfigs{}, fmt.Errorf("decode config: %w", err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("decode config: multiple JSON values")
+			return loadedJSONConfigs{}, errors.New("decode config: multiple JSON values")
 		}
-		return nil, fmt.Errorf("decode config: %w", err)
+		return loadedJSONConfigs{}, fmt.Errorf("decode config: %w", err)
 	}
 
 	var raws []jsonConfig
+	activeLocationID := ""
+	port := 0
+	subscription := subscriptionMetadata{}
 	switch {
 	case len(body) == 0:
-		return nil, errors.New("decode config: empty config")
+		return loadedJSONConfigs{}, errors.New("decode config: empty config")
 	case bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")):
 		if err := decodeStrict(body, &raws); err != nil {
-			return nil, fmt.Errorf("decode config: %w", err)
+			return loadedJSONConfigs{}, fmt.Errorf("decode config: %w", err)
 		}
 		if len(raws) == 0 {
-			return nil, errors.New("decode config: empty location list")
+			return loadedJSONConfigs{}, errors.New("decode config: empty location list")
 		}
 	default:
+		var probe struct {
+			Locations json.RawMessage `json:"locations"`
+		}
+		if err := json.Unmarshal(body, &probe); err != nil {
+			return loadedJSONConfigs{}, fmt.Errorf("decode config: %w", err)
+		}
+		if probe.Locations != nil {
+			var fileRaw jsonConfigFile
+			if err := decodeStrict(body, &fileRaw); err != nil {
+				return loadedJSONConfigs{}, fmt.Errorf("decode config: %w", err)
+			}
+			if fileRaw.Version != 4 {
+				return loadedJSONConfigs{}, fmt.Errorf("decode config: unsupported config version %d", fileRaw.Version)
+			}
+			if len(fileRaw.Locations) == 0 {
+				return loadedJSONConfigs{}, errors.New("decode config: empty location list")
+			}
+			raws = fileRaw.Locations
+			activeLocationID = fileRaw.ActiveLocationID
+			port = fileRaw.Port
+			subscription = subscriptionMetadata{
+				Name:      fileRaw.Name,
+				Update:    fileRaw.Update,
+				Refresh:   fileRaw.Refresh,
+				Color:     fileRaw.Color,
+				Icon:      fileRaw.Icon,
+				Used:      fileRaw.Used,
+				Available: fileRaw.Available,
+			}
+			break
+		}
+
 		var raw jsonConfig
 		if err := decodeStrict(body, &raw); err != nil {
-			return nil, fmt.Errorf("decode config: %w", err)
+			return loadedJSONConfigs{}, fmt.Errorf("decode config: %w", err)
 		}
 		raws = []jsonConfig{raw}
+		port = raw.Port
 	}
 
 	cfgs := make([]config, 0, len(raws))
@@ -356,7 +528,12 @@ func loadJSONConfigs(path string) ([]config, error) {
 		applyJSONConfig(&cfg, raw)
 		cfgs = append(cfgs, cfg)
 	}
-	return cfgs, nil
+	return loadedJSONConfigs{
+		activeLocationID: activeLocationID,
+		locations:        cfgs,
+		port:             port,
+		subscription:     subscription,
+	}, nil
 }
 
 func loadJSONConfig(path string) (config, error) {
@@ -384,13 +561,21 @@ func decodeStrict(data []byte, v any) error {
 }
 
 func applyJSONConfig(cfg *config, raw jsonConfig) {
-	setString(&cfg.label, raw.Label)
+	setString(&cfg.storageID, raw.StorageID)
+	setString(&cfg.label, firstNonEmpty(raw.Label, raw.Name))
+	setString(&cfg.color, raw.Color)
+	setString(&cfg.icon, raw.Icon)
+	setString(&cfg.used, raw.Used)
+	setString(&cfg.available, raw.Available)
+	setString(&cfg.ip, raw.IP)
+	setString(&cfg.comment, raw.Comment)
+	setString(&cfg.mimo, raw.MIMO)
 	setString(&cfg.mode, raw.Mode)
 	setString(&cfg.link, raw.Link)
 	setString(&cfg.carrier, raw.Carrier)
 	setString(&cfg.provider, raw.Provider)
 	setString(&cfg.roomID, firstNonEmpty(raw.Endpoint.RoomID, raw.RoomID))
-	setString(&cfg.clientID, raw.ClientID)
+	setString(&cfg.clientID, firstNonEmpty(raw.ClientIDKebab, raw.ClientID))
 	setString(&cfg.keyHex, firstNonEmpty(raw.Endpoint.Key, raw.Key))
 	setString(&cfg.transport, raw.Transport.Type)
 	setString(&cfg.dnsServer, raw.DNS)
@@ -575,6 +760,7 @@ func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, er
 func parseRuntimeFlagsFrom(args []string, errorHandling flag.ErrorHandling) (runtimeConfig, error) {
 	cfg := defaultConfig()
 	configFile := ""
+	port := 0
 	fs := flag.NewFlagSet("olcrtc", errorHandling)
 	if errorHandling == flag.ContinueOnError {
 		fs.SetOutput(io.Discard)
@@ -617,6 +803,7 @@ func parseRuntimeFlagsFrom(args []string, errorHandling flag.ErrorHandling) (run
 	fs.IntVar(&cfg.seiFragmentSize, "frag", 0, "Fragment size in bytes for fragmented transports (seichannel)")
 	fs.IntVar(&cfg.seiAckTimeoutMS, "ack-ms", 0, "ACK timeout in milliseconds for reliable visual transports (seichannel)")
 	fs.IntVar(&cfg.lifetime, "lifetime", 0, "Room lifetime in seconds (server only, 0 = infinite)")
+	fs.IntVar(&port, "port", 0, "HTTP port for serving client import config (server only)")
 
 	if err := fs.Parse(args); err != nil {
 		return runtimeConfig{}, err
@@ -626,21 +813,32 @@ func parseRuntimeFlagsFrom(args []string, errorHandling flag.ErrorHandling) (run
 		setFlags[f.Name] = true
 	})
 	if configFile != "" {
-		fileCfgs, err := loadJSONConfigs(configFile)
+		loadedCfgs, err := loadJSONConfigFile(configFile)
 		if err != nil {
 			return runtimeConfig{}, err
+		}
+		fileCfgs := loadedCfgs.locations
+		if loadedCfgs.activeLocationID != "" {
+			selectedCfgs, err := selectActiveLocation(fileCfgs, loadedCfgs.activeLocationID)
+			if err != nil {
+				return runtimeConfig{}, err
+			}
+			fileCfgs = selectedCfgs
+		}
+		if !setFlags["port"] {
+			port = loadedCfgs.port
 		}
 		for i := range fileCfgs {
 			mergeConfig(&fileCfgs[i], cfg, setFlags)
 			normalizeConfig(&fileCfgs[i])
 		}
 		applyLocationLabels(fileCfgs)
-		return runtimeConfig{locations: fileCfgs}, nil
+		return runtimeConfig{locations: fileCfgs, port: port, subscription: loadedCfgs.subscription}, nil
 	}
 	normalizeConfig(&cfg)
 	cfgs := []config{cfg}
 	applyLocationLabels(cfgs)
-	return runtimeConfig{locations: cfgs}, nil
+	return runtimeConfig{locations: cfgs, port: port}, nil
 }
 
 func normalizeConfig(cfg *config) {
@@ -714,7 +912,147 @@ func toSessionConfig(cfg config) session.Config {
 		SEIFragmentSize: cfg.seiFragmentSize,
 		SEIAckTimeoutMS: cfg.seiAckTimeoutMS,
 		Lifetime:        cfg.lifetime,
+		OnRoomID:        cfg.onRoomID,
 	}
+}
+
+func newServedConfigStore(cfgs []config, subscription subscriptionMetadata) *servedConfigStore {
+	copied := append([]config(nil), cfgs...)
+	return &servedConfigStore{
+		locations:    copied,
+		subscription: subscription,
+		updateUnix:   unixNow(),
+		refreshAfter: minPositiveLifetime(copied),
+	}
+}
+
+func (s *servedConfigStore) setRoomID(index int) func(string) {
+	return func(roomID string) {
+		if roomID == "" {
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if index >= 0 && index < len(s.locations) {
+			s.locations[index].roomID = roomID
+			s.updateUnix = unixNow()
+		}
+	}
+}
+
+func minPositiveLifetime(cfgs []config) int {
+	minLifetime := 0
+	for _, cfg := range cfgs {
+		if cfg.lifetime <= 0 {
+			continue
+		}
+		if minLifetime == 0 || cfg.lifetime < minLifetime {
+			minLifetime = cfg.lifetime
+		}
+	}
+	return minLifetime
+}
+
+func (s *servedConfigStore) subscriptionText() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var b strings.Builder
+	writeSubscriptionField(&b, "name", s.subscription.Name)
+	if s.updateUnix != 0 {
+		fmt.Fprintf(&b, "#update: %d\n", s.updateUnix)
+	}
+	if s.refreshAfter > 0 {
+		fmt.Fprintf(&b, "#refresh: %d\n", s.updateUnix+int64(s.refreshAfter))
+	} else {
+		writeSubscriptionField(&b, "refresh", s.subscription.Refresh)
+	}
+	writeSubscriptionField(&b, "color", s.subscription.Color)
+	writeSubscriptionField(&b, "icon", s.subscription.Icon)
+	writeSubscriptionField(&b, "used", s.subscription.Used)
+	writeSubscriptionField(&b, "available", s.subscription.Available)
+	if b.Len() > 0 && len(s.locations) > 0 {
+		b.WriteByte('\n')
+	}
+	for i, cfg := range s.locations {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		writeLocationSubscription(&b, cfg)
+	}
+	return b.String()
+}
+
+func writeSubscriptionField(b *strings.Builder, key, value string) {
+	value = oneLine(value)
+	if value != "" {
+		fmt.Fprintf(b, "#%s: %s\n", key, value)
+	}
+}
+
+func writeLocationField(b *strings.Builder, key, value string) {
+	value = oneLine(value)
+	if value != "" {
+		fmt.Fprintf(b, "##%s: %s\n", key, value)
+	}
+}
+
+func writeLocationSubscription(b *strings.Builder, cfg config) {
+	fmt.Fprintf(b, "olcrtc://%s?%s@%s#%s%%%s$%s\n",
+		oneLine(cfg.carrier),
+		oneLine(cfg.transport),
+		oneLine(cfg.roomID),
+		oneLine(cfg.keyHex),
+		oneLine(cfg.clientID),
+		oneLine(cfg.mimo),
+	)
+	writeLocationField(b, "name", cfg.label)
+	writeLocationField(b, "color", cfg.color)
+	writeLocationField(b, "icon", cfg.icon)
+	writeLocationField(b, "used", cfg.used)
+	writeLocationField(b, "available", cfg.available)
+	writeLocationField(b, "ip", cfg.ip)
+	writeLocationField(b, "comment", cfg.comment)
+}
+
+func oneLine(value string) string {
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return strings.TrimSpace(value)
+}
+
+func serveClientConfig(ctx context.Context, port int, store *servedConfigStore) error {
+	srv := &http.Server{
+		Addr:              net.JoinHostPort("", strconv.Itoa(port)),
+		Handler:           clientConfigHandler(store),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	logger.Infof("Serving client config on http://127.0.0.1:%d/", port)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("serve client config: %w", err)
+	}
+	return nil
+}
+
+func clientConfigHandler(store *servedConfigStore) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if _, err := io.WriteString(w, store.subscriptionText()); err != nil {
+			logger.Warnf("write subscription config: %v", err)
+		}
+	})
 }
 
 func waitForShutdown(errCh <-chan error, count int) error {

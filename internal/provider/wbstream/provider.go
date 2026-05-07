@@ -15,7 +15,7 @@ type wbStreamProvider struct {
 
 // New creates a new WB Stream provider instance.
 func New(ctx context.Context, cfg provider.Config) (provider.Provider, error) {
-	peer, err := NewPeer(ctx, cfg.Label, cfg.RoomURL, cfg.Name, cfg.OnData)
+	peer, err := NewPeer(ctx, cfg.Label, cfg.RoomURL, cfg.Name, cfg.OnData, cfg.OnRoomID)
 	if err != nil {
 		return nil, fmt.Errorf("create wbstream peer: %w", err)
 	}

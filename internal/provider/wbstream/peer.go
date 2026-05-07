@@ -34,6 +34,7 @@ type Peer struct {
 	name            string
 	room            *lksdk.Room
 	onData          func([]byte)
+	onRoomID        func(string)
 	onReconnect     func(*webrtc.DataChannel)
 	shouldReconnect func() bool
 	onEnded         func(string)
@@ -48,13 +49,18 @@ type Peer struct {
 }
 
 // NewPeer creates a new WB Stream provider peer.
-func NewPeer(ctx context.Context, label, roomURL, name string, onData func([]byte)) (*Peer, error) {
+func NewPeer(ctx context.Context, label, roomURL, name string, onData func([]byte), onRoomID ...func(string)) (*Peer, error) {
 	_, cancel := context.WithCancel(ctx)
+	var roomIDCallback func(string)
+	if len(onRoomID) > 0 {
+		roomIDCallback = onRoomID[0]
+	}
 	return &Peer{
 		label:     label,
 		roomURL:   roomURL,
 		name:      name,
 		onData:    onData,
+		onRoomID:  roomIDCallback,
 		sendQueue: make(chan []byte, 5000),
 		done:      make(chan struct{}),
 		cancel:    cancel,
@@ -145,6 +151,9 @@ func (p *Peer) getRoomToken(ctx context.Context) (string, error) {
 		}
 		log.Printf("WB Stream room created [%s]: %s", p.logLabel(), roomID)
 		log.Printf("To connect client use [%s]: -id %s", p.logLabel(), roomID)
+	}
+	if p.onRoomID != nil {
+		p.onRoomID(roomID)
 	}
 
 	if err := joinRoom(ctx, accessToken, roomID); err != nil {

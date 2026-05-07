@@ -45,6 +45,7 @@ type Config struct {
 	DNSServer string
 	ProxyAddr string
 	ProxyPort int
+	OnRoomID  func(string)
 }
 
 // Factory creates a new carrier session.
