@@ -29,6 +29,7 @@ var (
 
 // Peer represents a WB Stream WebRTC connection using LiveKit.
 type Peer struct {
+	label           string
 	roomURL         string
 	name            string
 	room            *lksdk.Room
@@ -47,9 +48,10 @@ type Peer struct {
 }
 
 // NewPeer creates a new WB Stream provider peer.
-func NewPeer(ctx context.Context, roomURL, name string, onData func([]byte)) (*Peer, error) {
+func NewPeer(ctx context.Context, label, roomURL, name string, onData func([]byte)) (*Peer, error) {
 	_, cancel := context.WithCancel(ctx)
 	return &Peer{
+		label:     label,
 		roomURL:   roomURL,
 		name:      name,
 		onData:    onData,
@@ -141,8 +143,8 @@ func (p *Peer) getRoomToken(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("create room: %w", err)
 		}
-		log.Printf("WB Stream room created: %s", roomID)
-		log.Printf("To connect client use: -id %s", roomID)
+		log.Printf("WB Stream room created [%s]: %s", p.logLabel(), roomID)
+		log.Printf("To connect client use [%s]: -id %s", p.logLabel(), roomID)
 	}
 
 	if err := joinRoom(ctx, accessToken, roomID); err != nil {
@@ -155,6 +157,13 @@ func (p *Peer) getRoomToken(ctx context.Context) (string, error) {
 	}
 
 	return token, nil
+}
+
+func (p *Peer) logLabel() string {
+	if p.label != "" {
+		return p.label
+	}
+	return p.name
 }
 
 func (p *Peer) processSendQueue() {

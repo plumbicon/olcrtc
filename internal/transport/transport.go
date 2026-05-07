@@ -34,6 +34,7 @@ type Transport interface {
 
 // Config holds common transport configuration.
 type Config struct {
+	Label           string
 	Carrier         string
 	RoomURL         string
 	ClientID        string

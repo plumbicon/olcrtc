@@ -34,6 +34,7 @@ var (
 
 // Server handles incoming tunnel connections and proxies their traffic.
 type Server struct {
+	label           string
 	ln              link.Link
 	cipher          *crypto.Cipher
 	conn            *muxconn.Conn
@@ -87,6 +88,7 @@ type ServiceMessage struct {
 // Run starts the server with the specified parameters.
 func Run(
 	ctx context.Context,
+	label,
 	linkName,
 	transportName,
 	carrierName,
@@ -123,6 +125,7 @@ func Run(
 	}
 
 	s := &Server{
+		label:           label,
 		cipher:          cipher,
 		clientID:        clientID,
 		dnsServer:       dnsServer,
@@ -241,6 +244,7 @@ func (s *Server) bringUpLink(
 	seiFPS, seiBatchSize, seiFragmentSize, seiAckTimeoutMS int,
 ) error {
 	ln, err := link.New(ctx, linkName, link.Config{
+		Label:           s.label,
 		Transport:       transportName,
 		Carrier:         carrierName,
 		RoomURL:         roomURL,
@@ -278,11 +282,11 @@ func (s *Server) bringUpLink(
 	})
 	ln.SetReconnectCallback(func() { s.handleReconnect() })
 
-	logger.Infof("Connecting link via %s/%s/%s...", linkName, transportName, carrierName)
+	logger.Infof("Connecting link [%s] via %s/%s/%s...", s.logLabel(), linkName, transportName, carrierName)
 	if err := ln.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect link: %w", err)
 	}
-	logger.Infof("Link connected")
+	logger.Infof("Link connected [%s]", s.logLabel())
 
 	s.installSession()
 
@@ -293,6 +297,13 @@ func (s *Server) bringUpLink(
 	}()
 
 	return nil
+}
+
+func (s *Server) logLabel() string {
+	if s.label != "" {
+		return s.label
+	}
+	return "server"
 }
 
 func (s *Server) installSession() {

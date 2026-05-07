@@ -9,7 +9,7 @@ import (
 )
 
 func TestWBStreamProviderForwardsPeerMethods(t *testing.T) {
-	peer, err := NewPeer(context.Background(), "room", "name", nil)
+	peer, err := NewPeer(context.Background(), "", "room", "name", nil)
 	if err != nil {
 		t.Fatalf("NewPeer() error = %v", err)
 	}

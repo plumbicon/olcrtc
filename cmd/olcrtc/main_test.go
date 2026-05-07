@@ -230,14 +230,14 @@ func TestLoadNames(t *testing.T) {
 func TestWaitForShutdown(t *testing.T) {
 	errCh := make(chan error, 1)
 	errCh <- nil
-	if err := waitForShutdown(errCh); err != nil {
+	if err := waitForShutdown(errCh, 1); err != nil {
 		t.Fatalf("waitForShutdown(nil) error = %v", err)
 	}
 
 	want := errors.New("boom")
 	errCh = make(chan error, 1)
 	errCh <- want
-	if err := waitForShutdown(errCh); !errors.Is(err, want) {
+	if err := waitForShutdown(errCh, 1); !errors.Is(err, want) {
 		t.Fatalf("waitForShutdown(error) = %v, want %v", err, want)
 	}
 }
@@ -291,6 +291,89 @@ func TestLoadJSONConfig(t *testing.T) {
 		cfg.dataDir != "data" || cfg.socksHost != "127.0.0.1" || cfg.socksPort != 1080 ||
 		cfg.lifetime != 300 || cfg.videoQRRecovery != "low" || cfg.videoCodec != "qrcode" {
 		t.Fatalf("loadJSONConfig() = %+v", cfg)
+	}
+}
+
+func TestLoadJSONConfigsArray(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "server.json")
+	data := []byte(`[
+		{
+			"label": "vp8",
+			"endpoint": {
+				"room_id": "any",
+				"key": "e830d36f7be8cfb04a741fc1a5e2ddf8ff04f30985dc070616483f939ad5fafe"
+			},
+			"carrier": "wbstream",
+			"transport": {
+				"type": "vp8channel",
+				"vp8": {
+					"fps": 60,
+					"batch": 64
+				}
+			}
+		},
+		{
+			"label": "data",
+			"endpoint": {
+				"room_id": "room-2",
+				"key": "e830d36f7be8cfb04a741fc1a5e2ddf8ff04f30985dc070616483f939ad5fafe"
+			},
+			"carrier": "telemost",
+			"transport": {
+				"type": "vp8channel",
+				"vp8": {
+					"fps": 30,
+					"batch": 8
+				}
+			}
+		}
+	]`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfgs, err := loadJSONConfigs(path)
+	if err != nil {
+		t.Fatalf("load configs: %v", err)
+	}
+
+	if len(cfgs) != 2 {
+		t.Fatalf("len(cfgs) = %d, want 2", len(cfgs))
+	}
+	if cfgs[0].roomID != "any" {
+		t.Fatalf("cfgs[0].roomID = %q, want any", cfgs[0].roomID)
+	}
+	if cfgs[0].label != "vp8" {
+		t.Fatalf("cfgs[0].label = %q, want vp8", cfgs[0].label)
+	}
+	if cfgs[0].carrier != "wbstream" {
+		t.Fatalf("cfgs[0].carrier = %q, want wbstream", cfgs[0].carrier)
+	}
+	if cfgs[0].transport != "vp8channel" {
+		t.Fatalf("cfgs[0].transport = %q, want vp8channel", cfgs[0].transport)
+	}
+	if cfgs[0].vp8FPS != 60 {
+		t.Fatalf("cfgs[0].vp8FPS = %d, want 60", cfgs[0].vp8FPS)
+	}
+	if cfgs[0].vp8BatchSize != 64 {
+		t.Fatalf("cfgs[0].vp8BatchSize = %d, want 64", cfgs[0].vp8BatchSize)
+	}
+	if cfgs[1].roomID != "room-2" {
+		t.Fatalf("cfgs[1].roomID = %q, want room-2", cfgs[1].roomID)
+	}
+	if cfgs[1].label != "data" {
+		t.Fatalf("cfgs[1].label = %q, want data", cfgs[1].label)
+	}
+	if cfgs[1].carrier != "telemost" {
+		t.Fatalf("cfgs[1].carrier = %q, want telemost", cfgs[1].carrier)
+	}
+	if cfgs[1].vp8FPS != 30 {
+		t.Fatalf("cfgs[1].vp8FPS = %d, want 30", cfgs[1].vp8FPS)
+	}
+	if cfgs[1].vp8BatchSize != 8 {
+		t.Fatalf("cfgs[1].vp8BatchSize = %d, want 8", cfgs[1].vp8BatchSize)
 	}
 }
 
@@ -355,5 +438,26 @@ func TestParseFlagsFromJSONConfigWithOverrides(t *testing.T) {
 	if cfg.carrier != "telemost" || cfg.vp8FPS != 30 ||
 		cfg.vp8BatchSize != 64 || cfg.clientID != "override-client" {
 		t.Fatalf("parseFlagsFrom(config) = %+v", cfg)
+	}
+}
+
+func TestRuntimeConfigDataDirRequiresSameValue(t *testing.T) {
+	t.Parallel()
+
+	cfg := runtimeConfig{locations: []config{
+		{dataDir: "data"},
+		{dataDir: "data"},
+	}}
+	dataDir, err := cfg.dataDir()
+	if err != nil {
+		t.Fatalf("dataDir: %v", err)
+	}
+	if dataDir != "data" {
+		t.Fatalf("dataDir = %q, want data", dataDir)
+	}
+
+	cfg.locations[1].dataDir = "other"
+	if _, err := cfg.dataDir(); err == nil {
+		t.Fatal("dataDir with mismatched locations succeeded")
 	}
 }

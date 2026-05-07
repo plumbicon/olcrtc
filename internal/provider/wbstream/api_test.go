@@ -109,7 +109,7 @@ func TestWBStreamGetRoomToken(t *testing.T) {
 		}
 	}))
 
-	p, err := NewPeer(context.Background(), "any", "peer", nil)
+	p, err := NewPeer(context.Background(), "", "any", "peer", nil)
 	if err != nil {
 		t.Fatalf("NewPeer() error = %v", err)
 	}

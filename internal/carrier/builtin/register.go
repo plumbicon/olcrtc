@@ -23,6 +23,7 @@ func Register() {
 func registerProvider(name string, factory providerFactory) {
 	carrier.Register(name, func(ctx context.Context, cfg carrier.Config) (carrier.Session, error) {
 		prov, err := factory(ctx, provider.Config{
+			Label:     cfg.Label,
 			RoomURL:   cfg.RoomURL,
 			Name:      cfg.Name,
 			OnData:    cfg.OnData,

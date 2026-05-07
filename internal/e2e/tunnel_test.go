@@ -293,6 +293,7 @@ func startTunnel(t *testing.T, serverClientID, clientClientID string) *tunnelRun
 	go func() {
 		serverErr <- server.Run(
 			ctx,
+			"",
 			"direct",
 			"datachannel",
 			carrierName,

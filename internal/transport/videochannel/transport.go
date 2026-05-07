@@ -79,6 +79,7 @@ type streamTransport struct {
 // New creates a visual videochannel transport backed by a carrier.
 func New(ctx context.Context, cfg transport.Config) (transport.Transport, error) {
 	session, err := carrier.New(ctx, cfg.Carrier, carrier.Config{
+		Label:     cfg.Label,
 		RoomURL:   cfg.RoomURL,
 		Name:      cfg.Name,
 		OnData:    nil,

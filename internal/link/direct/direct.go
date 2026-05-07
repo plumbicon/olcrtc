@@ -16,6 +16,7 @@ type directLink struct {
 // New creates a direct link that forwards bytes to the selected transport.
 func New(ctx context.Context, cfg link.Config) (link.Link, error) {
 	tr, err := transport.New(ctx, cfg.Transport, transport.Config{
+		Label:           cfg.Label,
 		Carrier:         cfg.Carrier,
 		RoomURL:         cfg.RoomURL,
 		ClientID:        cfg.ClientID,

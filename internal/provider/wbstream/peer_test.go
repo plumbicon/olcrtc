@@ -9,7 +9,7 @@ import (
 )
 
 func TestNewPeerAndSimpleAccessors(t *testing.T) {
-	p, err := NewPeer(context.Background(), "room", "name", func([]byte) {})
+	p, err := NewPeer(context.Background(), "", "room", "name", func([]byte) {})
 	if err != nil {
 		t.Fatalf("NewPeer() error = %v", err)
 	}
@@ -28,7 +28,7 @@ func TestNewPeerAndSimpleAccessors(t *testing.T) {
 }
 
 func TestSendQueueAndClose(t *testing.T) {
-	p, err := NewPeer(context.Background(), "room", "name", nil)
+	p, err := NewPeer(context.Background(), "", "room", "name", nil)
 	if err != nil {
 		t.Fatalf("NewPeer() error = %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSendQueueAndClose(t *testing.T) {
 }
 
 func TestCallbacksAndVideoTrackStorage(t *testing.T) {
-	p, err := NewPeer(context.Background(), "room", "name", nil)
+	p, err := NewPeer(context.Background(), "", "room", "name", nil)
 	if err != nil {
 		t.Fatalf("NewPeer() error = %v", err)
 	}

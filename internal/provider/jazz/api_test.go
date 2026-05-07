@@ -123,7 +123,7 @@ func TestNewPeerUsesRoomAPI(t *testing.T) {
 		}
 	}))
 
-	created, err := NewPeer(context.Background(), "any", "peer", nil)
+	created, err := NewPeer(context.Background(), "", "any", "peer", nil)
 	if err != nil {
 		t.Fatalf("NewPeer(create) error = %v", err)
 	}
@@ -131,7 +131,7 @@ func TestNewPeerUsesRoomAPI(t *testing.T) {
 		t.Fatalf("created room = %+v", created.roomInfo)
 	}
 
-	joined, err := NewPeer(context.Background(), "existing:secret", "peer", nil)
+	joined, err := NewPeer(context.Background(), "", "existing:secret", "peer", nil)
 	if err != nil {
 		t.Fatalf("NewPeer(join) error = %v", err)
 	}

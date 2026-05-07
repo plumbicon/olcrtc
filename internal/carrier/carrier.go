@@ -38,6 +38,7 @@ type VideoTrackCapable interface {
 
 // Config holds carrier configuration.
 type Config struct {
+	Label     string
 	RoomURL   string
 	Name      string
 	OnData    func([]byte)

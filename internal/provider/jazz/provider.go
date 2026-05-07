@@ -15,7 +15,7 @@ type jazzProvider struct {
 
 // New creates a new SaluteJazz provider instance.
 func New(ctx context.Context, cfg provider.Config) (provider.Provider, error) {
-	peer, err := NewPeer(ctx, cfg.RoomURL, cfg.Name, cfg.OnData)
+	peer, err := NewPeer(ctx, cfg.Label, cfg.RoomURL, cfg.Name, cfg.OnData)
 	if err != nil {
 		return nil, fmt.Errorf("create jazz peer: %w", err)
 	}

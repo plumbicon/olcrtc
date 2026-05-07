@@ -25,6 +25,7 @@ type Link interface {
 
 // Config holds common link configuration.
 type Config struct {
+	Label           string
 	Transport       string
 	Carrier         string
 	RoomURL         string

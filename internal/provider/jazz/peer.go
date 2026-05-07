@@ -38,6 +38,7 @@ var (
 
 // Peer represents a SaluteJazz WebRTC connection.
 type Peer struct {
+	label           string
 	name            string
 	roomInfo        *RoomInfo
 	ws              *websocket.Conn
@@ -68,7 +69,7 @@ type Peer struct {
 }
 
 // NewPeer creates a new Jazz provider peer.
-func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Peer, error) {
+func NewPeer(ctx context.Context, label, roomID, name string, onData func([]byte)) (*Peer, error) {
 	var roomInfo *RoomInfo
 	var err error
 
@@ -77,8 +78,8 @@ func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Pe
 		if err != nil {
 			return nil, fmt.Errorf("create room: %w", err)
 		}
-		log.Printf("Jazz room created: %s:%s", roomInfo.RoomID, roomInfo.Password)
-		log.Printf("To connect client use: -id \"%s:%s\"", roomInfo.RoomID, roomInfo.Password)
+		log.Printf("Jazz room created [%s]: %s:%s", logLabel(label, name), roomInfo.RoomID, roomInfo.Password)
+		log.Printf("To connect client use [%s]: -id \"%s:%s\"", logLabel(label, name), roomInfo.RoomID, roomInfo.Password)
 	} else {
 		var password string
 		parts := strings.Split(roomID, ":")
@@ -95,6 +96,7 @@ func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Pe
 	}
 
 	return &Peer{
+		label:          label,
 		name:           name,
 		roomInfo:       roomInfo,
 		onData:         onData,
@@ -105,6 +107,13 @@ func NewPeer(ctx context.Context, roomID, name string, onData func([]byte)) (*Pe
 		subscriberConn: make(chan struct{}),
 		publisherConn:  make(chan struct{}),
 	}, nil
+}
+
+func logLabel(label, name string) string {
+	if label != "" {
+		return label
+	}
+	return name
 }
 
 func (p *Peer) resetMediaState() {

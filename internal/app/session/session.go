@@ -91,6 +91,7 @@ var (
 
 // Config holds runtime session settings.
 type Config struct {
+	Label           string
 	Mode            string
 	Link            string
 	Transport       string
@@ -303,6 +304,7 @@ func Run(ctx context.Context, cfg Config) error {
 	case modeSRV:
 		if err := server.Run(
 			ctx,
+			cfg.Label,
 			cfg.Link,
 			cfg.Transport,
 			cfg.Carrier,

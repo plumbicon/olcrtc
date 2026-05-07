@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ var ErrDataDirRequired = errors.New("data directory required (use -data data)")
 var runSession = session.Run
 
 type config struct {
+	label           string
 	mode            string
 	link            string
 	transport       string
@@ -62,6 +64,10 @@ type config struct {
 	lifetime        int
 }
 
+type runtimeConfig struct {
+	locations []config
+}
+
 func main() {
 	if err := run(); err != nil {
 		logger.Error(err)
@@ -76,30 +82,29 @@ func run() error {
 func runWithArgs(args []string) error {
 	session.RegisterDefaults()
 
-	cfg, err := parseFlagsFrom(args, flag.ExitOnError)
+	runtimeCfg, err := parseRuntimeFlagsFrom(args, flag.ExitOnError)
 	if err != nil {
 		return err
 	}
-	return runWithConfig(cfg)
-}
+	configureLogging(runtimeCfg.debug())
 
-func runWithConfig(cfg config) error {
-	configureLogging(cfg.debug)
-
-	if err := session.Validate(toSessionConfig(cfg)); err != nil {
-		return fmt.Errorf("validate config: %w", err)
+	for i, cfg := range runtimeCfg.locations {
+		if err := session.Validate(toSessionConfig(cfg)); err != nil {
+			return fmt.Errorf("validate config location %d: %w", i+1, err)
+		}
 	}
 
-	if cfg.dataDir == "" {
-		return ErrDataDirRequired
-	}
-
-	dataDir, err := resolveDataDir(cfg.dataDir)
+	dataDir, err := runtimeCfg.dataDir()
 	if err != nil {
 		return err
 	}
 
-	if err := loadNames(dataDir); err != nil {
+	resolvedDataDir, err := resolveDataDir(dataDir)
+	if err != nil {
+		return err
+	}
+
+	if err := loadNames(resolvedDataDir); err != nil {
 		return err
 	}
 
@@ -109,24 +114,109 @@ func runWithConfig(cfg config) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- runSession(ctx, toSessionConfig(cfg))
-	}()
+	errCh := make(chan error, len(runtimeCfg.locations))
+	for i, cfg := range runtimeCfg.locations {
+		i, cfg := i, cfg
+		go func() {
+			logger.Infof("Starting location %d/%d [%s]: %s/%s/%s room=%s",
+				i+1, len(runtimeCfg.locations), cfg.label, cfg.link, cfg.transport, cfg.carrier, cfg.roomID)
+			if err := runSession(ctx, toSessionConfig(cfg)); err != nil {
+				errCh <- fmt.Errorf("location %d: %w", i+1, err)
+				return
+			}
+			errCh <- nil
+		}()
+	}
 
 	select {
 	case <-sigCh:
 		logger.Info("Shutting down gracefully...")
 		cancel()
-		return waitForShutdown(errCh)
+		return waitForShutdown(errCh, len(runtimeCfg.locations))
 	case err := <-errCh:
+		cancel()
 		return err
 	}
+}
+
+func runWithConfig(cfg config) error {
+	return runWithRuntimeConfig(runtimeConfig{locations: []config{cfg}})
+}
+
+func runWithRuntimeConfig(runtimeCfg runtimeConfig) error {
+	configureLogging(runtimeCfg.debug())
+
+	for i, cfg := range runtimeCfg.locations {
+		if err := session.Validate(toSessionConfig(cfg)); err != nil {
+			return fmt.Errorf("validate config location %d: %w", i+1, err)
+		}
+	}
+
+	dataDir, err := runtimeCfg.dataDir()
+	if err != nil {
+		return err
+	}
+
+	resolvedDataDir, err := resolveDataDir(dataDir)
+	if err != nil {
+		return err
+	}
+
+	if err := loadNames(resolvedDataDir); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, len(runtimeCfg.locations))
+	for i, cfg := range runtimeCfg.locations {
+		i, cfg := i, cfg
+		go func() {
+			if err := runSession(ctx, toSessionConfig(cfg)); err != nil {
+				errCh <- fmt.Errorf("location %d: %w", i+1, err)
+				return
+			}
+			errCh <- nil
+		}()
+	}
+
+	return waitForShutdown(errCh, len(runtimeCfg.locations))
 }
 
 func parseFlags() config {
 	cfg, _ := parseFlagsFrom(os.Args[1:], flag.ExitOnError)
 	return cfg
+}
+
+func (c runtimeConfig) debug() bool {
+	for _, cfg := range c.locations {
+		if cfg.debug {
+			return true
+		}
+	}
+	return false
+}
+
+func (c runtimeConfig) dataDir() (string, error) {
+	dataDir := ""
+	for i, cfg := range c.locations {
+		if cfg.dataDir == "" {
+			return "", fmt.Errorf("location %d: %w", i+1, ErrDataDirRequired)
+		}
+		if dataDir == "" {
+			dataDir = cfg.dataDir
+			continue
+		}
+		if cfg.dataDir != dataDir {
+			return "", fmt.Errorf("location %d: data directory %q differs from %q",
+				i+1, cfg.dataDir, dataDir)
+		}
+	}
+	if dataDir == "" {
+		return "", ErrDataDirRequired
+	}
+	return dataDir, nil
 }
 
 func defaultConfig() config {
@@ -136,7 +226,16 @@ func defaultConfig() config {
 	}
 }
 
+func applyLocationLabels(cfgs []config) {
+	for i := range cfgs {
+		if cfgs[i].label == "" {
+			cfgs[i].label = fmt.Sprintf("location %d", i+1)
+		}
+	}
+}
+
 type jsonConfig struct {
+	Label     string        `json:"label"`
 	Mode      string        `json:"mode"`
 	Link      string        `json:"link"`
 	Carrier   string        `json:"carrier"`
@@ -212,26 +311,80 @@ type jsonServer struct {
 	SOCKSProxyPort int    `json:"socks_proxy_port"`
 }
 
-func loadJSONConfig(path string) (config, error) {
+func loadJSONConfigs(path string) ([]config, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return config{}, fmt.Errorf("open config: %w", err)
+		return nil, fmt.Errorf("open config: %w", err)
 	}
 	defer f.Close()
 
-	var raw jsonConfig
 	dec := json.NewDecoder(f)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&raw); err != nil {
-		return config{}, fmt.Errorf("decode config: %w", err)
+	var body json.RawMessage
+	if err := dec.Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("decode config: multiple JSON values")
+		}
+		return nil, fmt.Errorf("decode config: %w", err)
 	}
 
-	cfg := defaultConfig()
-	applyJSONConfig(&cfg, raw)
-	return cfg, nil
+	var raws []jsonConfig
+	switch {
+	case len(body) == 0:
+		return nil, errors.New("decode config: empty config")
+	case bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")):
+		if err := decodeStrict(body, &raws); err != nil {
+			return nil, fmt.Errorf("decode config: %w", err)
+		}
+		if len(raws) == 0 {
+			return nil, errors.New("decode config: empty location list")
+		}
+	default:
+		var raw jsonConfig
+		if err := decodeStrict(body, &raw); err != nil {
+			return nil, fmt.Errorf("decode config: %w", err)
+		}
+		raws = []jsonConfig{raw}
+	}
+
+	cfgs := make([]config, 0, len(raws))
+	for _, raw := range raws {
+		cfg := defaultConfig()
+		applyJSONConfig(&cfg, raw)
+		cfgs = append(cfgs, cfg)
+	}
+	return cfgs, nil
+}
+
+func loadJSONConfig(path string) (config, error) {
+	cfgs, err := loadJSONConfigs(path)
+	if err != nil {
+		return config{}, err
+	}
+	return cfgs[0], nil
+}
+
+func decodeStrict(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func applyJSONConfig(cfg *config, raw jsonConfig) {
+	setString(&cfg.label, raw.Label)
 	setString(&cfg.mode, raw.Mode)
 	setString(&cfg.link, raw.Link)
 	setString(&cfg.carrier, raw.Carrier)
@@ -280,6 +433,9 @@ func applyJSONConfig(cfg *config, raw jsonConfig) {
 }
 
 func mergeConfig(dst *config, flags config, setFlags map[string]bool) {
+	if setFlags["label"] {
+		dst.label = flags.label
+	}
 	if setFlags["mode"] {
 		dst.mode = flags.mode
 	}
@@ -409,6 +565,14 @@ func firstNonEmpty(values ...string) string {
 }
 
 func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, error) {
+	runtimeCfg, err := parseRuntimeFlagsFrom(args, errorHandling)
+	if err != nil {
+		return config{}, err
+	}
+	return runtimeCfg.locations[0], nil
+}
+
+func parseRuntimeFlagsFrom(args []string, errorHandling flag.ErrorHandling) (runtimeConfig, error) {
 	cfg := defaultConfig()
 	configFile := ""
 	fs := flag.NewFlagSet("olcrtc", errorHandling)
@@ -417,6 +581,7 @@ func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, er
 	}
 
 	fs.StringVar(&configFile, "config", "", "Path to JSON config file")
+	fs.StringVar(&cfg.label, "label", "", "Location label used in logs")
 	fs.StringVar(&cfg.mode, "mode", "", "Mode: srv or cnc")
 	fs.StringVar(&cfg.link, "link", "", "Link: direct (p2p connection type)")
 	fs.StringVar(&cfg.transport, "transport", "", "Transport: datachannel, videochannel, seichannel, vp8channel")
@@ -454,24 +619,34 @@ func parseFlagsFrom(args []string, errorHandling flag.ErrorHandling) (config, er
 	fs.IntVar(&cfg.lifetime, "lifetime", 0, "Room lifetime in seconds (server only, 0 = infinite)")
 
 	if err := fs.Parse(args); err != nil {
-		return cfg, err
+		return runtimeConfig{}, err
 	}
 	setFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) {
 		setFlags[f.Name] = true
 	})
 	if configFile != "" {
-		fileCfg, err := loadJSONConfig(configFile)
+		fileCfgs, err := loadJSONConfigs(configFile)
 		if err != nil {
-			return config{}, err
+			return runtimeConfig{}, err
 		}
-		mergeConfig(&fileCfg, cfg, setFlags)
-		cfg = fileCfg
+		for i := range fileCfgs {
+			mergeConfig(&fileCfgs[i], cfg, setFlags)
+			normalizeConfig(&fileCfgs[i])
+		}
+		applyLocationLabels(fileCfgs)
+		return runtimeConfig{locations: fileCfgs}, nil
 	}
+	normalizeConfig(&cfg)
+	cfgs := []config{cfg}
+	applyLocationLabels(cfgs)
+	return runtimeConfig{locations: cfgs}, nil
+}
+
+func normalizeConfig(cfg *config) {
 	if cfg.carrier == "" {
 		cfg.carrier = cfg.provider
 	}
-	return cfg, nil
 }
 
 func configureLogging(debug bool) {
@@ -509,6 +684,7 @@ func loadNames(dataDir string) error {
 
 func toSessionConfig(cfg config) session.Config {
 	return session.Config{
+		Label:           cfg.label,
 		Mode:            cfg.mode,
 		Link:            cfg.link,
 		Transport:       cfg.transport,
@@ -541,14 +717,16 @@ func toSessionConfig(cfg config) session.Config {
 	}
 }
 
-func waitForShutdown(errCh <-chan error) error {
+func waitForShutdown(errCh <-chan error, count int) error {
 	done := make(chan error, 1)
 	go func() {
-		if err := <-errCh; err != nil {
-			done <- err
-		} else {
-			done <- nil
+		var firstErr error
+		for i := 0; i < count; i++ {
+			if err := <-errCh; err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
+		done <- firstErr
 	}()
 
 	select {

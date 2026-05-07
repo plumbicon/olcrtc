@@ -41,6 +41,7 @@ type VideoTrackCapable interface {
 
 // Config holds common configuration for all providers.
 type Config struct {
+	Label     string
 	RoomURL   string
 	Name      string
 	OnData    func([]byte)
